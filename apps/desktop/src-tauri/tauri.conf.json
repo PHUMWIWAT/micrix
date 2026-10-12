@@ -15,6 +15,13 @@
         "title": "MICRIX",
         "width": 1120,
         "height": 760,
+        "minWidth": 1120,
+        "minHeight": 760,
+        "maxWidth": 1120,
+        "maxHeight": 760,
+        "resizable": false,
+        "maximizable": false,
+        "fullscreen": false,
         "theme": "Dark",
         "visible": false
       }

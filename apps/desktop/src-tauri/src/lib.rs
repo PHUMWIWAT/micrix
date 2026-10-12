@@ -573,14 +573,35 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if EXITING.load(Ordering::SeqCst) || !hides_on_close(window) {
-                    release_hold(window.app_handle());
-                    stop_watch(window.app_handle());
-                    return;
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if EXITING.load(Ordering::SeqCst) || !hides_on_close(window) {
+                        release_hold(window.app_handle());
+                        stop_watch(window.app_handle());
+                        return;
+                    }
+                    api.prevent_close();
+                    let _ = window.hide();
                 }
-                api.prevent_close();
-                let _ = window.hide();
+                WindowEvent::Resized(size) => {
+                    // Hiding the window reports 0. A maximize or snap still changes the client size.
+                    if size.width == 0 || size.height == 0 {
+                        return;
+                    }
+                    let Ok(scale) = window.scale_factor() else {
+                        return;
+                    };
+                    let width = f64::from(size.width) / scale;
+                    let height = f64::from(size.height) / scale;
+                    if (width - 1120.0).abs() < 2.0 && (height - 760.0).abs() < 2.0 {
+                        return;
+                    }
+                    let _ = window.unmaximize();
+                    let _ = window.set_fullscreen(false);
+                    let _ = window
+                        .set_size(tauri::Size::Logical(tauri::LogicalSize::new(1120.0, 760.0)));
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
