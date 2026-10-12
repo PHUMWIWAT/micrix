@@ -4,6 +4,14 @@ use thiserror::Error;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
+pub const ACTIONS: &[&str] = &[
+    "toggle_mute",
+    "force_mute",
+    "force_unmute",
+    "hold_to_mute",
+    "open_settings",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub schema_version: u32,
@@ -83,6 +91,40 @@ pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
     Ok(settings)
 }
 
+/// Schema stays at 1. A saved v0.1 file is already that shape, so loading it is the migration.
+/// Empty shortcuts are dropped. The microphone target stays `default`.
+pub fn prepare_settings(mut settings: Settings) -> Result<Settings, SettingsError> {
+    settings.microphone.target = DEFAULT_DEVICE_ID.to_string();
+    settings
+        .hotkeys
+        .retain(|hotkey| !hotkey.shortcut.trim().is_empty());
+    let mut seen = Vec::new();
+    for (index, hotkey) in settings.hotkeys.iter_mut().enumerate() {
+        hotkey.shortcut = hotkey.shortcut.trim().to_string();
+        if hotkey.id.trim().is_empty() {
+            hotkey.id = format!("hotkey-{index}");
+        }
+        if !ACTIONS.contains(&hotkey.action.as_str()) {
+            return Err(SettingsError::Invalid(format!(
+                "Unknown hotkey action {}",
+                hotkey.action
+            )));
+        }
+        if !hotkey.enabled {
+            continue;
+        }
+        let key = hotkey.shortcut.to_ascii_lowercase();
+        if seen.contains(&key) {
+            return Err(SettingsError::Invalid(format!(
+                "Shortcut {} is used more than once",
+                hotkey.shortcut
+            )));
+        }
+        seen.push(key);
+    }
+    Ok(settings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +163,44 @@ mod tests {
     fn default_settings_round_trip() {
         let text = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(parse_settings(&text).unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn prepare_keeps_several_shortcuts_for_one_action() {
+        let mut settings = Settings::default();
+        settings.microphone.target = "custom".to_string();
+        settings.hotkeys.push(Hotkey {
+            id: String::new(),
+            shortcut: " Ctrl+Shift+F9 ".to_string(),
+            action: "toggle_mute".to_string(),
+            enabled: true,
+        });
+        settings.hotkeys.push(Hotkey {
+            id: "blank".to_string(),
+            shortcut: " ".to_string(),
+            action: "force_mute".to_string(),
+            enabled: true,
+        });
+        let settings = prepare_settings(settings).unwrap();
+        assert_eq!(settings.microphone.target, "default");
+        assert_eq!(settings.hotkeys.len(), 2);
+        assert_eq!(settings.hotkeys[1].shortcut, "Ctrl+Shift+F9");
+        assert_eq!(settings.hotkeys[1].id, "hotkey-1");
+    }
+
+    #[test]
+    fn prepare_rejects_a_duplicate_or_unknown_action() {
+        let mut settings = Settings::default();
+        settings.hotkeys.push(Hotkey {
+            id: "again".to_string(),
+            shortcut: "f9".to_string(),
+            action: "force_mute".to_string(),
+            enabled: true,
+        });
+        assert!(prepare_settings(settings).is_err());
+
+        let mut settings = Settings::default();
+        settings.hotkeys[0].action = "force-mute".to_string();
+        assert!(prepare_settings(settings).is_err());
     }
 }

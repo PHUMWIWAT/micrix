@@ -13,8 +13,7 @@ html,
 body,
 #root {
   margin: 0;
-  height: 100%;
-  overflow: hidden;
+  min-height: 100%;
 }
 
 body {
@@ -27,8 +26,8 @@ body {
 .sheet {
   box-sizing: border-box;
   width: min(440px, calc(100% - 36px));
-  margin: 16px 18px;
-  padding: 22px 24px 18px;
+  margin: 12px 16px;
+  padding: 16px 20px 14px;
   text-align: left;
   background: linear-gradient(
     165deg,
@@ -52,9 +51,9 @@ body {
 }
 
 .status {
-  margin: 14px 0 4px;
+  margin: 8px 0 2px;
   font-family: Bahnschrift, "Segoe UI Variable Display", "Segoe UI", sans-serif;
-  font-size: clamp(3.2rem, 8vw, 4.15rem);
+  font-size: clamp(2.8rem, 7vw, 3.4rem);
   font-weight: 600;
   letter-spacing: -0.04em;
   line-height: 0.9;
@@ -69,7 +68,7 @@ body {
 }
 
 .target {
-  margin: 0 0 16px;
+  margin: 0 0 10px;
   color: rgba(246, 239, 233, 0.7);
 }
 
@@ -87,7 +86,7 @@ button {
 .save {
   border-radius: 999px;
   border: 1px solid rgba(255, 230, 220, 0.22);
-  padding: 0.72rem 1.35rem;
+  padding: 0.55rem 1.15rem;
   font-weight: 600;
 }
 
@@ -104,8 +103,8 @@ button {
 
 form {
   display: grid;
-  gap: 10px;
-  margin-top: 18px;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 label {
@@ -126,11 +125,32 @@ input[type="checkbox"] {
   accent-color: #e10600;
 }
 
-input:not([type="checkbox"]) {
+input:not([type="checkbox"]),
+select {
   background: rgba(8, 2, 3, 0.45);
   border: 1px solid rgba(255, 226, 216, 0.18);
   border-radius: 14px;
-  padding: 0.7rem 0.85rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.hotkeys {
+  display: grid;
+  gap: 8px;
+}
+
+.hotkey {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 9.2rem auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.add,
+.remove {
+  border-radius: 999px;
+  border: 1px solid rgba(255, 230, 220, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.55rem 0.9rem;
 }
 
 .hint {

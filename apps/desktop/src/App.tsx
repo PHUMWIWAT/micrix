@@ -9,16 +9,30 @@ type Snapshot = {
   settings_json: string;
 };
 
-type Draft = {
+type HotkeyDraft = {
+  id: string;
   shortcut: string;
+  action: string;
+};
+
+type Draft = {
+  hotkeys: HotkeyDraft[];
   muteOnStart: boolean;
   startMinimized: boolean;
   closeToTray: boolean;
   startWithSystem: boolean;
 };
 
+const ACTIONS = [
+  ["toggle_mute", "Toggle"],
+  ["force_mute", "Mute"],
+  ["force_unmute", "Unmute"],
+  ["hold_to_mute", "Hold to mute"],
+  ["open_settings", "Open settings"],
+] as const;
+
 const EMPTY_DRAFT: Draft = {
-  shortcut: "F9",
+  hotkeys: [{ id: "toggle-default-mic", shortcut: "F9", action: "toggle_mute" }],
   muteOnStart: false,
   startMinimized: true,
   closeToTray: true,
@@ -28,18 +42,22 @@ const EMPTY_DRAFT: Draft = {
 function readDraft(settingsJson: string): Draft {
   const value = JSON.parse(settingsJson) as {
     microphone?: { mute_on_start?: boolean };
-    hotkeys?: { shortcut?: string; action?: string; enabled?: boolean }[];
+    hotkeys?: { id?: string; shortcut?: string; action?: string; enabled?: boolean }[];
     general?: {
       start_minimized?: boolean;
       close_to_tray?: boolean;
       start_with_system?: boolean;
     };
   };
-  const hotkey = value.hotkeys?.find(
-    (item) => item.action === "toggle_mute" && item.enabled !== false,
-  );
+  const hotkeys = (value.hotkeys ?? [])
+    .filter((item) => item.enabled !== false)
+    .map((item, index) => ({
+      id: item.id || `hotkey-${index}`,
+      shortcut: item.shortcut ?? "",
+      action: item.action || "toggle_mute",
+    }));
   return {
-    shortcut: hotkey?.shortcut ?? "",
+    hotkeys,
     muteOnStart: value.microphone?.mute_on_start === true,
     startMinimized: value.general?.start_minimized === true,
     closeToTray: value.general?.close_to_tray !== false,
@@ -102,14 +120,12 @@ function App() {
     const payload = {
       schema_version: 1,
       microphone: { target: "default", mute_on_start: draft.muteOnStart },
-      hotkeys: [
-        {
-          id: "toggle-default-mic",
-          shortcut: draft.shortcut.trim(),
-          action: "toggle_mute",
-          enabled: true,
-        },
-      ],
+      hotkeys: draft.hotkeys.map((hotkey, index) => ({
+        id: hotkey.id || `hotkey-${index}`,
+        shortcut: hotkey.shortcut.trim(),
+        action: hotkey.action,
+        enabled: true,
+      })),
       general: {
         start_minimized: draft.startMinimized,
         close_to_tray: draft.closeToTray,
@@ -154,16 +170,77 @@ function App() {
       ) : null}
 
       <form onSubmit={save}>
-        <label>
-          Shortcut
-          <input
-            value={draft.shortcut}
-            spellCheck={false}
-            onChange={(event) =>
-              setDraft({ ...draft, shortcut: event.currentTarget.value })
+        <div className="hotkeys">
+          {draft.hotkeys.map((hotkey, index) => (
+            <div className="hotkey" key={hotkey.id || index}>
+              <input
+                aria-label="Shortcut"
+                value={hotkey.shortcut}
+                spellCheck={false}
+                onChange={(event) => {
+                  const hotkeys = draft.hotkeys.slice();
+                  hotkeys[index] = {
+                    ...hotkey,
+                    shortcut: event.currentTarget.value,
+                  };
+                  setDraft({ ...draft, hotkeys });
+                }}
+              />
+              <select
+                aria-label="Action"
+                value={hotkey.action}
+                onChange={(event) => {
+                  const hotkeys = draft.hotkeys.slice();
+                  hotkeys[index] = {
+                    ...hotkey,
+                    action: event.currentTarget.value,
+                  };
+                  setDraft({ ...draft, hotkeys });
+                }}
+              >
+                {ACTIONS.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="remove"
+                onClick={() =>
+                  setDraft({
+                    ...draft,
+                    hotkeys: draft.hotkeys.filter((_, item) => item !== index),
+                  })
+                }
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="add"
+            onClick={() =>
+              setDraft({
+                ...draft,
+                hotkeys: [
+                  ...draft.hotkeys,
+                  {
+                    id: crypto.randomUUID(),
+                    shortcut: "",
+                    action: "toggle_mute",
+                  },
+                ],
+              })
             }
-          />
-        </label>
+          >
+            Add shortcut
+          </button>
+        </div>
+        <p className="hint">
+          Hold to mute puts the microphone back when the keys are released.
+        </p>
         <label className="choice">
           <input
             type="checkbox"
@@ -197,6 +274,19 @@ function App() {
             }
           />
           Hide when the window closes
+        </label>
+        <label className="choice">
+          <input
+            type="checkbox"
+            checked={draft.startWithSystem}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                startWithSystem: event.currentTarget.checked,
+              })
+            }
+          />
+          Start when Windows starts
         </label>
         <button type="submit" className="save">
           Save settings
