@@ -2015,11 +2015,16 @@ dependencies = [
 [[package]]
 name = "mic-platform"
 version = "0.1.0"
+dependencies = [
+ "mic-core",
+ "windows",
+]
 
 [[package]]
 name = "mic-settings"
 version = "0.1.0"
 dependencies = [
+ "mic-core",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

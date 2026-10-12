@@ -1,14 +1,33 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+#[cfg(not(windows))]
+mod unsupported;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[cfg(windows)]
+mod windows;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg(target_os = "macos")]
+mod macos;
+
+use mic_core::MicrophoneController;
+
+/// Controller for this operating system. Non-Windows builds return [`mic_core::MicError::Unsupported`].
+pub fn open_controller() -> Box<dyn MicrophoneController> {
+    #[cfg(windows)]
+    {
+        Box::new(windows::WindowsController)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(linux::LinuxController)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(macos::MacController)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        Box::new(unsupported::UnsupportedController)
     }
 }

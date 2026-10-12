@@ -1,3 +1,4 @@
+use mic_core::DEFAULT_DEVICE_ID;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,7 +47,7 @@ impl Default for Settings {
         Self {
             schema_version: SCHEMA_VERSION,
             microphone: MicrophoneSettings {
-                target: "default".to_string(),
+                target: DEFAULT_DEVICE_ID.to_string(),
                 mute_on_start: false,
             },
             hotkeys: vec![Hotkey {

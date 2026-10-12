@@ -1,5 +1,8 @@
 use thiserror::Error;
 
+/// Settings target and controller id for the current OS default input.
+pub const DEFAULT_DEVICE_ID: &str = "default";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MicrophoneDevice {
     pub id: String,
