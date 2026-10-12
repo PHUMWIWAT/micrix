@@ -1,0 +1,26 @@
+# local notes
+dosc/
+
+# junctions into .agents/skills, recreated locally
+.grok/
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Rust
+target/
+
+# Tauri / React
+node_modules/
+dist/
+.vite/
+
+# logs
+*.log
