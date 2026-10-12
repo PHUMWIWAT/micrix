@@ -218,6 +218,31 @@ fn end_hold(app: &tauri::AppHandle, shortcut: &Shortcut) {
     release_hold(app);
 }
 
+#[cfg(windows)]
+fn allow_shortcut_recording(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    // WebView2 swallows browser accelerators (Ctrl+J opens Downloads) before the page can record them.
+    let _ = window.with_webview(|webview| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+        use windows_core::Interface;
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(settings) = core.Settings() else {
+            return;
+        };
+        let Ok(settings) = settings.cast::<ICoreWebView2Settings3>() else {
+            return;
+        };
+        let _ = settings.SetAreBrowserAcceleratorKeysEnabled(false);
+    });
+}
+
+#[cfg(not(windows))]
+fn allow_shortcut_recording(_app: &tauri::AppHandle) {}
+
 fn apply_hotkey(app: &tauri::AppHandle, settings: &Settings) {
     release_hold(app);
     let _ = app.global_shortcut().unregister_all();
@@ -538,6 +563,7 @@ pub fn run() {
             start_watch(app.handle());
             mute_if_requested(app.handle(), &settings);
             sync_status(app.handle());
+            allow_shortcut_recording(app.handle());
             // Config starts the window hidden. Showing here is the only path that respects start_minimized.
             if !settings.general.start_minimized
                 && let Some(window) = app.get_webview_window("main")

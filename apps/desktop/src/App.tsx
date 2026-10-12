@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -24,7 +24,7 @@ type Draft = {
 };
 
 const ACTIONS = [
-  ["toggle_mute", "Toggle"],
+  ["toggle_mute", "Toggle mute"],
   ["force_mute", "Mute"],
   ["force_unmute", "Unmute"],
   ["hold_to_mute", "Hold to mute"],
@@ -37,6 +37,34 @@ const EMPTY_DRAFT: Draft = {
   startMinimized: true,
   closeToTray: true,
   startWithSystem: false,
+};
+
+const KEY_NAMES: Record<string, string> = {
+  Space: "Space",
+  Enter: "Enter",
+  Tab: "Tab",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+  Insert: "Insert",
+  ArrowUp: "Up",
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  Minus: "Minus",
+  Equal: "Equal",
+  BracketLeft: "BracketLeft",
+  BracketRight: "BracketRight",
+  Backslash: "Backslash",
+  Semicolon: "Semicolon",
+  Quote: "Quote",
+  Comma: "Comma",
+  Period: "Period",
+  Slash: "Slash",
+  Backquote: "Backquote",
 };
 
 function readDraft(settingsJson: string): Draft {
@@ -65,16 +93,42 @@ function readDraft(settingsJson: string): Draft {
   };
 }
 
-function actionLabel(status: string) {
-  if (status === "Unmuted") return "Mute";
-  if (status === "Muted") return "Unmute";
-  return "Toggle microphone";
+function shortcutFromEvent(event: KeyboardEvent): string | null {
+  if (event.repeat || event.key === "Escape") return null;
+  let key: string | null = null;
+  if (event.code.startsWith("Key") && event.code.length === 4) key = event.code.slice(3);
+  else if (event.code.startsWith("Digit")) key = event.code.slice(5);
+  else if (/^F\d{1,2}$/.test(event.code)) key = event.code;
+  else key = KEY_NAMES[event.code] ?? null;
+  if (!key) return null;
+  const parts = [
+    event.ctrlKey ? "Ctrl" : "",
+    event.altKey ? "Alt" : "",
+    event.shiftKey ? "Shift" : "",
+    event.metaKey ? "Super" : "",
+    key,
+  ].filter(Boolean);
+  return parts.join("+");
+}
+
+function statusCopy(status: string) {
+  if (status === "Muted") return { title: "Microphone is muted", button: "Unmute microphone" };
+  if (status === "Unmuted") return { title: "Microphone is active", button: "Mute microphone" };
+  return { title: "Microphone is unavailable", button: "Mute microphone" };
 }
 
 function App() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const [recordingId, setRecordingId] = useState<string | null>(null);
+  const [nav, setNav] = useState<"mic" | "keys" | "settings">("mic");
+  const [keysOpen, setKeysOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(true);
+  const saveSeq = useRef(0);
+  const keysRef = useRef<HTMLElement>(null);
+  const settingsRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,10 +139,12 @@ function App() {
         if (cancelled) return;
         setStatus(shot.status);
         setError(shot.error);
+        setSaved(shot.error === "");
         try {
           setDraft(readDraft(shot.settings_json));
         } catch (parseError) {
           setError(String(parseError));
+          setSaved(false);
         }
       })
       .catch((invokeError: unknown) => {
@@ -104,6 +160,7 @@ function App() {
 
     listen<string>("hotkey-error", (event) => {
       setError(event.payload);
+      setSaved(event.payload === "");
     }).then((stop) => {
       if (cancelled) stop();
       else stops.push(stop);
@@ -115,184 +172,362 @@ function App() {
     };
   }, []);
 
-  async function save(event: FormEvent) {
-    event.preventDefault();
+  useEffect(() => {
+    if (!recordingId) return;
+    function onKey(event: KeyboardEvent) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        setRecordingId(null);
+        return;
+      }
+      const shortcut = shortcutFromEvent(event);
+      if (!shortcut) return;
+      const hotkeys = draft.hotkeys.map((hotkey) =>
+        hotkey.id === recordingId ? { ...hotkey, shortcut } : hotkey,
+      );
+      setRecordingId(null);
+      void persist({ ...draft, hotkeys });
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recordingId, draft]);
+
+  async function persist(next: Draft) {
+    const seq = ++saveSeq.current;
+    setDraft(next);
     const payload = {
       schema_version: 1,
-      microphone: { target: "default", mute_on_start: draft.muteOnStart },
-      hotkeys: draft.hotkeys.map((hotkey, index) => ({
+      microphone: { target: "default", mute_on_start: next.muteOnStart },
+      hotkeys: next.hotkeys.map((hotkey, index) => ({
         id: hotkey.id || `hotkey-${index}`,
         shortcut: hotkey.shortcut.trim(),
         action: hotkey.action,
         enabled: true,
       })),
       general: {
-        start_minimized: draft.startMinimized,
-        close_to_tray: draft.closeToTray,
-        start_with_system: draft.startWithSystem,
+        start_minimized: next.startMinimized,
+        close_to_tray: next.closeToTray,
+        start_with_system: next.startWithSystem,
       },
     };
     try {
       const shot = await invoke<Snapshot>("save_settings", {
         settingsJson: JSON.stringify(payload),
       });
+      if (seq !== saveSeq.current) return;
       setStatus(shot.status);
       setError(shot.error);
-      setDraft(readDraft(shot.settings_json));
+      setSaved(shot.error === "");
+      try {
+        setDraft(readDraft(shot.settings_json));
+      } catch (parseError) {
+        setError(String(parseError));
+        setSaved(false);
+      }
     } catch (saveError) {
+      if (seq !== saveSeq.current) return;
       setError(String(saveError));
+      setSaved(false);
     }
   }
 
-  return (
-    <main className="sheet">
-      <img className="mark" src="/logo.png" alt="MICRIX" />
-      <p className="status" data-state={status}>
-        {status || "…"}
-      </p>
-      <p className="target">Default input</p>
-      <button
-        type="button"
-        className="mute"
-        data-quiet={status === "Muted" ? "true" : "false"}
-        onClick={() => {
-          invoke("toggle_microphone").catch((toggleError: unknown) => {
-            setError(String(toggleError));
-          });
-        }}
-      >
-        {actionLabel(status)}
-      </button>
-      {error ? (
-        <p className="notice" role="alert">
-          {error}
-        </p>
-      ) : null}
+  function show(section: "mic" | "keys" | "settings") {
+    setNav(section);
+    const target = section === "keys" ? keysRef.current : section === "settings" ? settingsRef.current : null;
+    target?.scrollIntoView({ block: "start" });
+    if (section === "keys") setKeysOpen(true);
+    if (section === "settings") setSettingsOpen(true);
+  }
 
-      <form onSubmit={save}>
-        <div className="hotkeys">
-          {draft.hotkeys.map((hotkey, index) => (
-            <div className="hotkey" key={hotkey.id || index}>
-              <input
-                aria-label="Shortcut"
-                value={hotkey.shortcut}
-                spellCheck={false}
-                onChange={(event) => {
-                  const hotkeys = draft.hotkeys.slice();
-                  hotkeys[index] = {
-                    ...hotkey,
-                    shortcut: event.currentTarget.value,
-                  };
-                  setDraft({ ...draft, hotkeys });
-                }}
-              />
-              <select
-                aria-label="Action"
-                value={hotkey.action}
-                onChange={(event) => {
-                  const hotkeys = draft.hotkeys.slice();
-                  hotkeys[index] = {
-                    ...hotkey,
-                    action: event.currentTarget.value,
-                  };
-                  setDraft({ ...draft, hotkeys });
-                }}
-              >
-                {ACTIONS.map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="remove"
-                onClick={() =>
-                  setDraft({
-                    ...draft,
-                    hotkeys: draft.hotkeys.filter((_, item) => item !== index),
-                  })
-                }
-              >
-                Remove
-              </button>
-            </div>
-          ))}
+  const copy = statusCopy(status);
+  const holds = draft.hotkeys.some((hotkey) => hotkey.action === "hold_to_mute");
+
+  return (
+    <div className="app">
+      <aside className="sidebar">
+        <img className="brand" src="/logo.png" alt="MICRIX" />
+        <nav className="nav" aria-label="Sections">
+          <button type="button" className={nav === "mic" ? "nav-item active" : "nav-item"} onClick={() => show("mic")}>
+            <MicIcon />
+            Microphone
+          </button>
+          <button type="button" className={nav === "keys" ? "nav-item active" : "nav-item"} onClick={() => show("keys")}>
+            <KeysIcon />
+            Shortcuts
+          </button>
           <button
             type="button"
-            className="add"
-            onClick={() =>
-              setDraft({
-                ...draft,
-                hotkeys: [
-                  ...draft.hotkeys,
-                  {
-                    id: crypto.randomUUID(),
-                    shortcut: "",
-                    action: "toggle_mute",
-                  },
-                ],
-              })
-            }
+            className={nav === "settings" ? "nav-item active" : "nav-item"}
+            onClick={() => show("settings")}
           >
-            Add shortcut
+            <GearIcon />
+            Settings
           </button>
-        </div>
-        <p className="hint">
-          Hold to mute puts the microphone back when the keys are released.
+        </nav>
+        <p className="tray-state">
+          <span className="dot" aria-hidden="true" />
+          Running in tray
         </p>
-        <label className="choice">
-          <input
-            type="checkbox"
-            checked={draft.muteOnStart}
-            onChange={(event) =>
-              setDraft({ ...draft, muteOnStart: event.currentTarget.checked })
-            }
-          />
-          Mute when MICRIX starts
-        </label>
-        <p className="hint">Applies the next time MICRIX starts.</p>
-        <label className="choice">
-          <input
-            type="checkbox"
-            checked={draft.startMinimized}
-            onChange={(event) =>
-              setDraft({
-                ...draft,
-                startMinimized: event.currentTarget.checked,
-              })
-            }
-          />
-          Start in the tray
-        </label>
-        <label className="choice">
-          <input
-            type="checkbox"
-            checked={draft.closeToTray}
-            onChange={(event) =>
-              setDraft({ ...draft, closeToTray: event.currentTarget.checked })
-            }
-          />
-          Hide when the window closes
-        </label>
-        <label className="choice">
-          <input
-            type="checkbox"
-            checked={draft.startWithSystem}
-            onChange={(event) =>
-              setDraft({
-                ...draft,
-                startWithSystem: event.currentTarget.checked,
-              })
-            }
-          />
-          Start when Windows starts
-        </label>
-        <button type="submit" className="save">
-          Save settings
-        </button>
-      </form>
-    </main>
+      </aside>
+
+      <main className="main">
+        <header className="page-head">
+          <h1>Microphone</h1>
+          <p>Manage your input device</p>
+        </header>
+
+        <section className="card status-card" aria-live="polite">
+          <span className="mic-badge" data-state={status}>
+            <MicIcon />
+          </span>
+          <div className="status-copy">
+            <strong data-state={status}>{copy.title}</strong>
+            <span>Default input device</span>
+          </div>
+          <button
+            type="button"
+            className="mute"
+            disabled={status !== "Muted" && status !== "Unmuted"}
+            onClick={() => {
+              invoke("toggle_microphone").catch((toggleError: unknown) => {
+                setError(String(toggleError));
+                setSaved(false);
+              });
+            }}
+          >
+            <MicIcon />
+            {copy.button}
+          </button>
+        </section>
+
+        <section className="card" ref={keysRef} id="shortcuts">
+          <button type="button" className="card-head" onClick={() => setKeysOpen((open) => !open)} aria-expanded={keysOpen}>
+            <KeysIcon />
+            <span>
+              <strong>Keyboard shortcuts</strong>
+              <small>Quick actions for your microphone</small>
+            </span>
+            <Chevron open={keysOpen} />
+          </button>
+          {keysOpen ? (
+            <div className="card-body">
+              {draft.hotkeys.map((hotkey) => (
+                <div className="shortcut" key={hotkey.id}>
+                  <button
+                    type="button"
+                    className={recordingId === hotkey.id ? "key recording" : "key"}
+                    onClick={() => setRecordingId(hotkey.id)}
+                  >
+                    {recordingId === hotkey.id ? "Press keys" : hotkey.shortcut || "Record"}
+                  </button>
+                  <select
+                    aria-label="Action"
+                    value={hotkey.action}
+                    onChange={(event) => {
+                      const hotkeys = draft.hotkeys.map((item) =>
+                        item.id === hotkey.id ? { ...item, action: event.currentTarget.value } : item,
+                      );
+                      void persist({ ...draft, hotkeys });
+                    }}
+                  >
+                    {ACTIONS.map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Record shortcut"
+                    onClick={() => setRecordingId(hotkey.id)}
+                  >
+                    <PencilIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Remove shortcut"
+                    onClick={() =>
+                      void persist({
+                        ...draft,
+                        hotkeys: draft.hotkeys.filter((item) => item.id !== hotkey.id),
+                      })
+                    }
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                className="add"
+                onClick={() => {
+                  const id = crypto.randomUUID();
+                  setDraft({
+                    ...draft,
+                    hotkeys: [...draft.hotkeys, { id, shortcut: "", action: "toggle_mute" }],
+                  });
+                  setRecordingId(id);
+                  setKeysOpen(true);
+                }}
+              >
+                + Add shortcut
+              </button>
+              {holds ? (
+                <p className="hint">Hold to mute puts the microphone back when the keys are released.</p>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+
+        <section className="card" ref={settingsRef} id="settings">
+          <button
+            type="button"
+            className="card-head"
+            onClick={() => setSettingsOpen((open) => !open)}
+            aria-expanded={settingsOpen}
+          >
+            <GearIcon />
+            <span>
+              <strong>Startup & behavior</strong>
+              <small>Control how MICRIX works</small>
+            </span>
+            <Chevron open={settingsOpen} />
+          </button>
+          {settingsOpen ? (
+            <div className="card-body settings">
+              <Toggle
+                label="Mute when MICRIX starts"
+                checked={draft.muteOnStart}
+                title="Applies the next time MICRIX starts."
+                onChange={(muteOnStart) => void persist({ ...draft, muteOnStart })}
+              />
+              <Toggle
+                label="Start in system tray"
+                checked={draft.startMinimized}
+                onChange={(startMinimized) => void persist({ ...draft, startMinimized })}
+              />
+              <Toggle
+                label="Hide on close"
+                checked={draft.closeToTray}
+                onChange={(closeToTray) => void persist({ ...draft, closeToTray })}
+              />
+              <Toggle
+                label="Launch on Windows startup"
+                checked={draft.startWithSystem}
+                onChange={(startWithSystem) => void persist({ ...draft, startWithSystem })}
+              />
+            </div>
+          ) : null}
+        </section>
+
+        <footer className="page-foot">
+          <p className={error ? "save-state bad" : "save-state"} role={error ? "alert" : undefined}>
+            <CheckIcon />
+            {error || (saved ? "Changes saved" : "Saving…")}
+          </p>
+          <span className="version">v0.1.0</span>
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+function Toggle({
+  label,
+  checked,
+  title,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  title?: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="toggle" title={title}>
+      <span>{label}</span>
+      <input
+        type="checkbox"
+        role="switch"
+        checked={checked}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+      />
+    </label>
+  );
+}
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg className={open ? "chevron open" : "chevron"} viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M5 8l5 5 5-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <path d="M6.5 11a5.5 5.5 0 0 0 11 0M12 16.5V20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function KeysIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20h4l10-10-4-4L4 16v4z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="M13 7l4 4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 7h14M9 7V5h6v2M8 7l1 13h6l1-13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M8.5 12.2l2.2 2.2 4.8-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
   );
 }
 
