@@ -29,6 +29,10 @@
   padding: 1.5em 1.5em 0;
 }
 
+.notice {
+  color: #c41616;
+}
+
 .row {
   display: flex;
   justify-content: center;

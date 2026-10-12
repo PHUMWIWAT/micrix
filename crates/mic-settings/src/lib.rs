@@ -42,6 +42,15 @@ pub enum SettingsError {
     UnsupportedVersion(u32),
 }
 
+impl Settings {
+    /// The enabled `toggle_mute` shortcut string, registered as written.
+    pub fn toggle_shortcut(&self) -> Option<&str> {
+        self.hotkeys.iter().find_map(|hotkey| {
+            (hotkey.enabled && hotkey.action == "toggle_mute").then_some(hotkey.shortcut.as_str())
+        })
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -83,6 +92,15 @@ mod tests {
         for text in ["", "{", "null", "not-json", "{\"schema_version\":"] {
             assert!(parse_settings(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn toggle_shortcut_uses_the_enabled_toggle() {
+        assert_eq!(Settings::default().toggle_shortcut(), Some("F9"));
+
+        let mut settings = Settings::default();
+        settings.hotkeys[0].enabled = false;
+        assert_eq!(settings.toggle_shortcut(), None);
     }
 
     #[test]

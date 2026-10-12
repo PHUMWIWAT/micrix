@@ -52,7 +52,7 @@ pub fn mute_status(
 
 /// Reads the latest mute bit, then writes the opposite. The returned bool is the state just written.
 pub fn toggle_mute(
-    controller: &impl MicrophoneController,
+    controller: &dyn MicrophoneController,
     device_id: &str,
 ) -> Result<bool, MicError> {
     let next = !controller.get_muted(device_id)?;
