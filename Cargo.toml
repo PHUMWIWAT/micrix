@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/desktop/src-tauri",
+    "crates/mic-core",
+    "crates/mic-platform",
+    "crates/mic-settings",
+]
+default-members = [
+    "apps/desktop/src-tauri",
+    "crates/mic-core",
+    "crates/mic-platform",
+    "crates/mic-settings",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+
+# shortcut: windows-gnu cdylib exceeds 65535 exports at opt-level 0, drop if the host is MSVC only
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
