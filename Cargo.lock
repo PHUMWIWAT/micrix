@@ -2062,14 +2062,14 @@ dependencies = [
 
 [[package]]
 name = "mic-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mic-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mic-core",
  "tracing",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "mic-settings"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mic-core",
  "serde",
@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "micrix"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mic-core",
  "mic-platform",
