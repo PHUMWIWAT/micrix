@@ -1,108 +1,162 @@
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  color: #f6efe9;
+  background: #140608;
+  color-scheme: dark;
+  font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
   font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
+  line-height: 1.45;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
 
-.container {
+html,
+body,
+#root {
   margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  height: 100%;
+  overflow: hidden;
 }
 
-.logo {
-  width: min(420px, 86vw);
-  height: auto;
-  padding: 1.5em 1.5em 0;
+body {
+  background:
+    radial-gradient(90% 70% at 0% -10%, rgba(225, 6, 0, 0.34), transparent 58%),
+    radial-gradient(70% 50% at 100% 110%, rgba(90, 8, 12, 0.7), transparent 46%),
+    #120406;
 }
 
-.notice {
-  color: #c41616;
+.sheet {
+  box-sizing: border-box;
+  width: min(440px, calc(100% - 36px));
+  margin: 16px 18px;
+  padding: 22px 24px 18px;
+  text-align: left;
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.1),
+    rgba(255, 255, 255, 0.03) 42%,
+    rgba(225, 6, 0, 0.06)
+  );
+  border: 1px solid rgba(255, 226, 216, 0.2);
+  border-radius: 28px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 24px 48px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(22px);
 }
 
-.row {
-  display: flex;
-  justify-content: center;
+.mark {
+  width: 40px;
+  height: 40px;
+  display: block;
+  border-radius: 10px;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
+.status {
+  margin: 14px 0 4px;
+  font-family: Bahnschrift, "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  font-size: clamp(3.2rem, 8vw, 4.15rem);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 0.9;
 }
 
-a:hover {
-  color: #535bf2;
+.status[data-state="Muted"] {
+  color: #e10600;
 }
 
-h1 {
-  text-align: center;
+.status[data-state="Unavailable"] {
+  color: #d7b2aa;
 }
 
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
+.target {
+  margin: 0 0 16px;
+  color: rgba(246, 239, 233, 0.7);
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
 }
 
 button {
   cursor: pointer;
 }
 
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
+.mute,
+.save {
+  border-radius: 999px;
+  border: 1px solid rgba(255, 230, 220, 0.22);
+  padding: 0.72rem 1.35rem;
+  font-weight: 600;
 }
 
-#greet-input {
-  margin-right: 5px;
+.mute {
+  background: #e10600;
+  color: #fff8f5;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
+.mute[data-quiet="true"] {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f6efe9;
+}
 
-  a:hover {
-    color: #24c8db;
-  }
+form {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
+label {
+  display: grid;
+  gap: 6px;
+}
+
+label.choice {
+  grid-auto-flow: column;
+  justify-content: start;
+  align-items: center;
+  gap: 10px;
+}
+
+input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: #e10600;
+}
+
+input:not([type="checkbox"]) {
+  background: rgba(8, 2, 3, 0.45);
+  border: 1px solid rgba(255, 226, 216, 0.18);
+  border-radius: 14px;
+  padding: 0.7rem 0.85rem;
+}
+
+.hint {
+  margin: -6px 0 0;
+  color: rgba(246, 239, 233, 0.62);
+  font-size: 0.92rem;
+}
+
+.save {
+  justify-self: start;
+  margin-top: 4px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.notice {
+  margin: 16px 0 0;
+  color: #ffd0c8;
+}
+
+:focus-visible {
+  outline: 2px solid #e10600;
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet {
+    backdrop-filter: none;
   }
 }

@@ -104,6 +104,20 @@ mod tests {
     }
 
     #[test]
+    fn default_json_matches_schema_v1() {
+        let value = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["microphone"]["target"], "default");
+        assert_eq!(value["microphone"]["mute_on_start"], false);
+        assert_eq!(value["hotkeys"].as_array().unwrap().len(), 1);
+        assert_eq!(value["hotkeys"][0]["shortcut"], "F9");
+        assert_eq!(value["hotkeys"][0]["action"], "toggle_mute");
+        assert_eq!(value["general"]["start_minimized"], true);
+        assert_eq!(value["general"]["close_to_tray"], true);
+        assert_eq!(value["general"]["start_with_system"], false);
+    }
+
+    #[test]
     fn default_settings_round_trip() {
         let text = serde_json::to_string(&Settings::default()).unwrap();
         assert_eq!(parse_settings(&text).unwrap(), Settings::default());
