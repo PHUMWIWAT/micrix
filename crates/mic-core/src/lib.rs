@@ -39,7 +39,7 @@ pub trait MicrophoneController: Send + Sync {
 }
 
 pub fn mute_status(
-    controller: &impl MicrophoneController,
+    controller: &dyn MicrophoneController,
     device_id: &str,
 ) -> Result<MuteStatus, MicError> {
     match controller.get_muted(device_id) {
