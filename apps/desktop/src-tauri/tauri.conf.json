@@ -24,6 +24,24 @@
         "fullscreen": false,
         "theme": "Dark",
         "visible": false
+      },
+      {
+        "label": "toast",
+        "url": "toast.html",
+        "title": "MICRIX",
+        "width": 280,
+        "height": 84,
+        "visible": false,
+        "decorations": false,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focusable": false,
+        "focus": false,
+        "theme": "Dark"
       }
     ],
     "security": {

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>MICRIX</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #12080b;
+        color: #f6f1f1;
+        font-family: Bahnschrift, "Segoe UI Variable Display", "Segoe UI", sans-serif;
+        user-select: none;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(255, 48, 52, 0.7);
+        box-sizing: border-box;
+        box-shadow: inset 0 0 18px rgba(255, 20, 30, 0.28);
+      }
+      strong {
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+      }
+    </style>
+  </head>
+  <body>
+    <strong id="label"></strong>
+    <script>
+      window.__micrixToast = (text) => {
+        document.getElementById("label").textContent = text;
+      };
+    </script>
+  </body>
+</html>

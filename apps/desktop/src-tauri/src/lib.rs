@@ -2,7 +2,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use mic_core::{DEFAULT_DEVICE_ID, MicError, MuteStatus, mute_status, toggle_mute};
 use mic_settings::{Settings, parse_settings, prepare_settings};
@@ -15,6 +16,8 @@ use tauri_plugin_store::StoreExt;
 
 // Close hides the window. Exit sets this first so that close does not keep the process alive.
 static EXITING: AtomicBool = AtomicBool::new(false);
+static LAST_STATUS: Mutex<Option<String>> = Mutex::new(None);
+static TOAST_TICK: AtomicU64 = AtomicU64::new(0);
 
 struct TrayStatus {
     icon: TrayIcon<Wry>,
@@ -96,7 +99,130 @@ fn sync_status(app: &tauri::AppHandle) -> String {
         let _ = tray.icon.set_tooltip(Some(format!("MICRIX — {label}")));
     }
     let _ = app.emit("mic-status", &label);
+    let mut previous = LAST_STATUS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let changed = previous.as_deref() != Some(label.as_str());
+    let first = previous.is_none();
+    *previous = Some(label.clone());
+    drop(previous);
+    if changed && !first {
+        present_toast(app, &label);
+    }
     label
+}
+
+fn present_toast(app: &tauri::AppHandle, label: &str) {
+    if label != "Muted" && label != "Unmuted" {
+        return;
+    }
+    let settings = current_settings(app);
+    play_toast_sound(&settings.toast.sound);
+    if !settings.toast.enabled {
+        return;
+    }
+    let Some(toast) = app.get_webview_window("toast") else {
+        return;
+    };
+    place_toast(app, &toast, &settings.toast.position);
+    let text = if label == "Muted" {
+        "Microphone muted"
+    } else {
+        "Microphone unmuted"
+    };
+    let script = format!(
+        "window.__micrixToast && window.__micrixToast({})",
+        serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string())
+    );
+    let _ = toast.eval(script);
+    let _ = toast.show();
+    let tick = TOAST_TICK.fetch_add(1, Ordering::SeqCst) + 1;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1600));
+        if TOAST_TICK.load(Ordering::SeqCst) != tick {
+            return;
+        }
+        if let Some(toast) = app.get_webview_window("toast") {
+            let _ = toast.hide();
+        }
+    });
+}
+
+fn place_toast(app: &tauri::AppHandle, toast: &tauri::WebviewWindow, position: &str) {
+    let Some(monitor) = toast_monitor(app) else {
+        return;
+    };
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let width = (280.0 * scale).round() as i32;
+    let height = (84.0 * scale).round() as i32;
+    let margin = (24.0 * scale).round() as i32;
+    let left = area.position.x;
+    let top = area.position.y;
+    let right = left + area.size.width as i32 - width;
+    let bottom = top + area.size.height as i32 - height;
+    let center_x = left + (area.size.width as i32 - width) / 2;
+    let center_y = top + (area.size.height as i32 - height) / 2;
+    let (x, y) = match position {
+        "top-left" => (left + margin, top + margin),
+        "top" => (center_x, top + margin),
+        "top-right" => (right - margin, top + margin),
+        "left" => (left + margin, center_y),
+        "center" => (center_x, center_y),
+        "right" => (right - margin, center_y),
+        "bottom-left" => (left + margin, bottom - margin),
+        "bottom-right" => (right - margin, bottom - margin),
+        _ => (center_x, bottom - margin),
+    };
+    let _ = toast.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+        width as u32,
+        height as u32,
+    )));
+    let _ = toast.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        x, y,
+    )));
+}
+
+fn toast_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    let cursor = app.cursor_position().ok();
+    let monitors = app.available_monitors().unwrap_or_default();
+    if let Some(cursor) = cursor {
+        let x = cursor.x as i32;
+        let y = cursor.y as i32;
+        for monitor in &monitors {
+            let area = monitor.work_area();
+            let inside = x >= area.position.x
+                && y >= area.position.y
+                && x < area.position.x + area.size.width as i32
+                && y < area.position.y + area.size.height as i32;
+            if inside {
+                return Some(monitor.clone());
+            }
+        }
+    }
+    monitors
+        .into_iter()
+        .next()
+        .or_else(|| app.primary_monitor().ok().flatten())
+}
+
+fn play_toast_sound(path: &str) {
+    if path.is_empty() || !std::path::Path::new(path).is_file() {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            let _ = PlaySoundW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                None,
+                SND_FILENAME | SND_ASYNC | SND_NODEFAULT,
+            );
+        }
+    }
 }
 
 fn toggle_menu_text(shortcut: &str) -> String {
@@ -481,6 +607,73 @@ fn toggle_microphone(app: tauri::AppHandle) {
     toggle_default(&app);
 }
 
+#[tauri::command]
+fn pick_sound(app: tauri::AppHandle) -> Result<String, String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Err("The window is not open.".to_string());
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let dialog_window = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let _ = sender.send(choose_wav(window_owner(&dialog_window)));
+        })
+        .map_err(|error| error.to_string())?;
+    receiver.recv().map_err(|error| error.to_string())?
+}
+
+fn window_owner(window: &tauri::WebviewWindow) -> Option<isize> {
+    #[cfg(windows)]
+    {
+        return window.hwnd().ok().map(|handle| handle.0 as isize);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        None
+    }
+}
+
+fn choose_wav(owner: Option<isize>) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        use std::mem::size_of;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Controls::Dialogs::{
+            GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+        };
+        use windows::core::{PCWSTR, PWSTR};
+
+        let mut buffer = vec![0u16; 1024];
+        let filter: Vec<u16> = "Sound (WAV)\0*.wav\0\0".encode_utf16().collect();
+        let title: Vec<u16> = "Add a sound\0".encode_utf16().collect();
+        let extension: Vec<u16> = "wav\0".encode_utf16().collect();
+        let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        dialog.lStructSize = size_of::<OPENFILENAMEW>() as u32;
+        dialog.hwndOwner = HWND(owner.unwrap_or(0) as *mut _);
+        dialog.lpstrFilter = PCWSTR(filter.as_ptr());
+        dialog.lpstrFile = PWSTR(buffer.as_mut_ptr());
+        dialog.nMaxFile = buffer.len() as u32;
+        dialog.lpstrTitle = PCWSTR(title.as_ptr());
+        dialog.lpstrDefExt = PCWSTR(extension.as_ptr());
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        let chosen = unsafe { GetOpenFileNameW(&mut dialog) };
+        if !chosen.as_bool() {
+            return Ok(String::new());
+        }
+        let end = buffer
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(buffer.len());
+        return Ok(String::from_utf16_lossy(&buffer[..end]));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = owner;
+        Err("Sound files can be chosen on Windows.".to_string())
+    }
+}
+
 struct LogSink {
     file: Option<std::fs::File>,
 }
@@ -564,6 +757,9 @@ pub fn run() {
             mute_if_requested(app.handle(), &settings);
             sync_status(app.handle());
             allow_shortcut_recording(app.handle());
+            if let Some(toast) = app.get_webview_window("toast") {
+                let _ = toast.set_ignore_cursor_events(true);
+            }
             // Config starts the window hidden. Showing here is the only path that respects start_minimized.
             if !settings.general.start_minimized
                 && let Some(window) = app.get_webview_window("main")
@@ -573,6 +769,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() != "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                return;
+            }
             match event {
                 WindowEvent::CloseRequested { api, .. } => {
                     if EXITING.load(Ordering::SeqCst) || !hides_on_close(window) {
@@ -607,7 +810,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             save_settings,
-            toggle_microphone
+            toggle_microphone,
+            pick_sound
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

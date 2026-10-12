@@ -34,3 +34,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows-core = "0.62"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_UI_Controls_Dialogs",
+] }

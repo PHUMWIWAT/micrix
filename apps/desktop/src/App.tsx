@@ -21,6 +21,9 @@ type Draft = {
   startMinimized: boolean;
   closeToTray: boolean;
   startWithSystem: boolean;
+  toastEnabled: boolean;
+  toastPosition: string;
+  sound: string;
 };
 
 const ACTIONS = [
@@ -31,12 +34,27 @@ const ACTIONS = [
   ["open_settings", "Open settings"],
 ] as const;
 
+const TOAST_PLACES = [
+  ["top-left", "Top left"],
+  ["top", "Top"],
+  ["top-right", "Top right"],
+  ["left", "Left"],
+  ["center", "Center"],
+  ["right", "Right"],
+  ["bottom-left", "Bottom left"],
+  ["bottom", "Bottom"],
+  ["bottom-right", "Bottom right"],
+] as const;
+
 const EMPTY_DRAFT: Draft = {
   hotkeys: [{ id: "toggle-default-mic", shortcut: "F9", action: "toggle_mute" }],
   muteOnStart: false,
   startMinimized: true,
   closeToTray: true,
   startWithSystem: false,
+  toastEnabled: true,
+  toastPosition: "bottom",
+  sound: "",
 };
 
 const KEY_NAMES: Record<string, string> = {
@@ -76,6 +94,7 @@ function readDraft(settingsJson: string): Draft {
       close_to_tray?: boolean;
       start_with_system?: boolean;
     };
+    toast?: { enabled?: boolean; position?: string; sound?: string };
   };
   const hotkeys = (value.hotkeys ?? [])
     .filter((item) => item.enabled !== false)
@@ -90,6 +109,9 @@ function readDraft(settingsJson: string): Draft {
     startMinimized: value.general?.start_minimized === true,
     closeToTray: value.general?.close_to_tray !== false,
     startWithSystem: value.general?.start_with_system === true,
+    toastEnabled: value.toast?.enabled !== false,
+    toastPosition: value.toast?.position || "bottom",
+    sound: value.toast?.sound ?? "",
   };
 }
 
@@ -209,6 +231,11 @@ function App() {
         start_minimized: next.startMinimized,
         close_to_tray: next.closeToTray,
         start_with_system: next.startWithSystem,
+      },
+      toast: {
+        enabled: next.toastEnabled,
+        position: next.toastPosition,
+        sound: next.sound.trim(),
       },
     };
     try {
@@ -419,6 +446,50 @@ function App() {
                 checked={draft.startWithSystem}
                 onChange={(startWithSystem) => void persist({ ...draft, startWithSystem })}
               />
+              <Toggle
+                label="Show mute toast"
+                checked={draft.toastEnabled}
+                title="Shows a message when the microphone is muted or unmuted."
+                onChange={(toastEnabled) => void persist({ ...draft, toastEnabled })}
+              />
+              <p className="hint">Where it shows</p>
+              <div className="layout-pad" role="group" aria-label="Toast position">
+                {TOAST_PLACES.map(([place, label]) => (
+                  <button
+                    key={place}
+                    type="button"
+                    className={draft.toastPosition === place ? "active" : undefined}
+                    aria-label={label}
+                    aria-pressed={draft.toastPosition === place}
+                    onClick={() => void persist({ ...draft, toastPosition: place })}
+                  />
+                ))}
+              </div>
+              <div className="sound-row">
+                <span>{draft.sound ? draft.sound.split(/[/\\]/).pop() : "No sound"}</span>
+                <button
+                  type="button"
+                  className="add"
+                  onClick={() => {
+                    invoke<string>("pick_sound")
+                      .then((picked) => {
+                        if (picked) void persist({ ...draft, sound: picked });
+                      })
+                      .catch((pickError: unknown) => {
+                        setError(String(pickError));
+                        setSaved(false);
+                      });
+                  }}
+                >
+                  Add sound
+                </button>
+                {draft.sound ? (
+                  <button type="button" className="add" onClick={() => void persist({ ...draft, sound: "" })}>
+                    Remove
+                  </button>
+                ) : null}
+              </div>
+              <p className="hint">WAV file. Plays on mute and unmute.</p>
             </div>
           ) : null}
         </section>

@@ -12,12 +12,27 @@ pub const ACTIONS: &[&str] = &[
     "open_settings",
 ];
 
+pub const TOAST_POSITIONS: &[&str] = &[
+    "top-left",
+    "top",
+    "top-right",
+    "left",
+    "center",
+    "right",
+    "bottom-left",
+    "bottom",
+    "bottom-right",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub schema_version: u32,
     pub microphone: MicrophoneSettings,
     pub hotkeys: Vec<Hotkey>,
     pub general: GeneralSettings,
+    /// Missing on files saved before the toast existed. Schema stays 1.
+    #[serde(default)]
+    pub toast: ToastSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +54,34 @@ pub struct GeneralSettings {
     pub start_minimized: bool,
     pub close_to_tray: bool,
     pub start_with_system: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToastSettings {
+    #[serde(default = "default_toast_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_toast_position")]
+    pub position: String,
+    #[serde(default)]
+    pub sound: String,
+}
+
+fn default_toast_enabled() -> bool {
+    true
+}
+
+fn default_toast_position() -> String {
+    "bottom".to_string()
+}
+
+impl Default for ToastSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_toast_enabled(),
+            position: default_toast_position(),
+            sound: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -78,6 +121,7 @@ impl Default for Settings {
                 close_to_tray: true,
                 start_with_system: false,
             },
+            toast: ToastSettings::default(),
         }
     }
 }
@@ -122,6 +166,19 @@ pub fn prepare_settings(mut settings: Settings) -> Result<Settings, SettingsErro
         }
         seen.push(key);
     }
+    settings.toast.position = settings.toast.position.trim().to_string();
+    settings.toast.sound = settings.toast.sound.trim().to_string();
+    if !TOAST_POSITIONS.contains(&settings.toast.position.as_str()) {
+        return Err(SettingsError::Invalid(format!(
+            "Unknown toast position {}",
+            settings.toast.position
+        )));
+    }
+    if settings.toast.sound.contains(['\n', '\r']) {
+        return Err(SettingsError::Invalid(
+            "The sound path is not valid".to_string(),
+        ));
+    }
     Ok(settings)
 }
 
@@ -157,6 +214,22 @@ mod tests {
         assert_eq!(value["general"]["start_minimized"], true);
         assert_eq!(value["general"]["close_to_tray"], true);
         assert_eq!(value["general"]["start_with_system"], false);
+    }
+
+    #[test]
+    fn saved_v1_without_toast_still_loads() {
+        let text = r#"{"schema_version":1,"microphone":{"target":"default","mute_on_start":false},"hotkeys":[{"id":"toggle-default-mic","shortcut":"F9","action":"toggle_mute","enabled":true}],"general":{"start_minimized":true,"close_to_tray":true,"start_with_system":false}}"#;
+        let settings = parse_settings(text).unwrap();
+        assert!(settings.toast.enabled);
+        assert_eq!(settings.toast.position, "bottom");
+        assert!(settings.toast.sound.is_empty());
+    }
+
+    #[test]
+    fn prepare_rejects_an_unknown_toast_position() {
+        let mut settings = Settings::default();
+        settings.toast.position = "middle".to_string();
+        assert!(prepare_settings(settings).is_err());
     }
 
     #[test]

@@ -333,9 +333,46 @@ button {
 }
 
 .hint {
-  margin: 0;
+  margin: 8px 0 0;
   color: #a3989c;
   font-size: 13px;
+}
+
+.layout-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+  gap: 8px;
+  justify-content: center;
+  margin: 10px 0 4px;
+}
+
+.layout-pad button {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: #1a1013;
+}
+
+.layout-pad button.active {
+  border-color: transparent;
+  background: linear-gradient(180deg, #ff3a3a, #d10d12);
+  box-shadow: 0 0 12px rgba(255, 20, 30, 0.45);
+}
+
+.sound-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.sound-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f6f1f1;
 }
 
 .settings {
