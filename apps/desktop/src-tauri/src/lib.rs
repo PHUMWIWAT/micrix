@@ -1,3 +1,6 @@
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -46,12 +49,28 @@ fn notice_error(notice: &HotkeyNotice) -> String {
 }
 
 fn store_notice(app: &tauri::AppHandle, message: String) {
+    if !message.is_empty() {
+        tracing::warn!("{message}");
+    }
     let notice = app.state::<HotkeyNotice>();
     *notice
         .error
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = message.clone();
     let _ = app.emit("hotkey-error", message);
+}
+
+fn append_notice(app: &tauri::AppHandle, message: String) {
+    let prior = app
+        .try_state::<HotkeyNotice>()
+        .map(|notice| notice_error(&notice))
+        .unwrap_or_default();
+    let message = if prior.is_empty() {
+        message
+    } else {
+        format!("{prior} {message}")
+    };
+    store_notice(app, message);
 }
 
 fn status_label(status: Result<MuteStatus, MicError>) -> &'static str {
@@ -243,17 +262,7 @@ fn apply_autostart(app: &tauri::AppHandle, settings: &Settings) {
         Ok(())
     };
     if let Err(error) = result {
-        let prior = app
-            .try_state::<HotkeyNotice>()
-            .map(|notice| notice_error(&notice))
-            .unwrap_or_default();
-        let message = format!("Could not update startup: {error}");
-        let message = if prior.is_empty() {
-            message
-        } else {
-            format!("{prior} {message}")
-        };
-        store_notice(app, message);
+        append_notice(app, format!("Could not update startup: {error}"));
     }
 }
 
@@ -263,17 +272,37 @@ fn mute_if_requested(app: &tauri::AppHandle, settings: &Settings) {
     }
     let controller = mic_platform::open_controller();
     if let Err(error) = controller.set_muted(DEFAULT_DEVICE_ID, true) {
-        let prior = app
-            .try_state::<HotkeyNotice>()
-            .map(|notice| notice_error(&notice))
-            .unwrap_or_default();
-        let message = format!("Could not mute on start: {error}");
-        let message = if prior.is_empty() {
-            message
-        } else {
-            format!("{prior} {message}")
-        };
-        store_notice(app, message);
+        append_notice(app, format!("Could not mute on start: {error}"));
+    }
+}
+
+fn stop_watch(app: &tauri::AppHandle) {
+    let Some(slot) = app.try_state::<Mutex<Option<mic_platform::EndpointWatch>>>() else {
+        return;
+    };
+    slot.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+}
+
+fn start_watch(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    match mic_platform::watch_default_input(move || {
+        let handle = handle.clone();
+        // OnNotify can run on the main thread. A direct hop would call GetMute inside that callback.
+        std::thread::spawn(move || {
+            let refresh = handle.clone();
+            if let Err(error) = handle.run_on_main_thread(move || {
+                sync_status(&refresh);
+            }) {
+                tracing::warn!("could not refresh mute status: {error}");
+            }
+        });
+    }) {
+        Ok(watch) => {
+            app.manage(Mutex::new(Some(watch)));
+        }
+        Err(error) => append_notice(app, format!("Could not watch the microphone: {error}")),
     }
 }
 
@@ -288,6 +317,7 @@ fn show_main(app: &tauri::AppHandle) {
 fn request_exit(app: &tauri::AppHandle) {
     EXITING.store(true, Ordering::SeqCst);
     release_hold(app);
+    stop_watch(app);
     app.exit(0);
 }
 
@@ -426,8 +456,56 @@ fn toggle_microphone(app: tauri::AppHandle) {
     toggle_default(&app);
 }
 
+struct LogSink {
+    file: Option<std::fs::File>,
+}
+
+impl Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = std::io::stderr().write_all(buf);
+        if let Some(file) = &mut self.file {
+            let _ = file.write_all(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::stderr().flush();
+        if let Some(file) = &mut self.file {
+            let _ = file.flush();
+        }
+        Ok(())
+    }
+}
+
+fn log_file() -> Option<std::fs::File> {
+    // shortcut: micrix.log only appends, rotate it if it grows past a few megabytes
+    let dir = PathBuf::from(std::env::var_os("APPDATA")?).join("com.micrix.app");
+    std::fs::create_dir_all(&dir).ok()?;
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("micrix.log"))
+        .ok()
+}
+
+fn init_tracing() {
+    let file = Mutex::new(log_file());
+    let _ = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(move || LogSink {
+            file: file
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().and_then(|handle| handle.try_clone().ok())),
+        })
+        .try_init();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_tracing();
     let builder =
         tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
@@ -457,6 +535,7 @@ pub fn run() {
             install_tray(app, &shortcut)?;
             apply_hotkey(app.handle(), &settings);
             apply_autostart(app.handle(), &settings);
+            start_watch(app.handle());
             mute_if_requested(app.handle(), &settings);
             sync_status(app.handle());
             // Config starts the window hidden. Showing here is the only path that respects start_minimized.
@@ -471,6 +550,7 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if EXITING.load(Ordering::SeqCst) || !hides_on_close(window) {
                     release_hold(window.app_handle());
+                    stop_watch(window.app_handle());
                     return;
                 }
                 api.prevent_close();
