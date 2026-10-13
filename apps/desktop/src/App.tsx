@@ -499,7 +499,7 @@ function App() {
             <CheckIcon />
             {error || (saved ? "Changes saved" : "Saving…")}
           </p>
-          <span className="version">v0.1.3</span>
+          <span className="version">v0.1.4</span>
         </footer>
       </main>
     </div>
