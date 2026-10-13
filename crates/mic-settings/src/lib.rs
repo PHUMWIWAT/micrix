@@ -1,3 +1,10 @@
+mod placement;
+
+pub use placement::{ToastRect, WorkArea, toast_rect, work_area_at};
+
+use std::str::FromStr;
+
+use global_hotkey::hotkey::HotKey;
 use mic_core::DEFAULT_DEVICE_ID;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -126,6 +133,11 @@ impl Default for Settings {
     }
 }
 
+/// Parse then prepare. Load and save both use this. A failure must not rewrite the file.
+pub fn accept_settings(text: &str) -> Result<Settings, SettingsError> {
+    prepare_settings(parse_settings(text)?)
+}
+
 pub fn parse_settings(text: &str) -> Result<Settings, SettingsError> {
     let settings: Settings =
         serde_json::from_str(text).map_err(|error| SettingsError::Invalid(error.to_string()))?;
@@ -154,10 +166,16 @@ pub fn prepare_settings(mut settings: Settings) -> Result<Settings, SettingsErro
                 hotkey.action
             )));
         }
+        let parsed = HotKey::from_str(&hotkey.shortcut).map_err(|_| {
+            SettingsError::Invalid(format!(
+                "Shortcut {} could not be registered",
+                hotkey.shortcut
+            ))
+        })?;
         if !hotkey.enabled {
             continue;
         }
-        let key = hotkey.shortcut.to_ascii_lowercase();
+        let key = parsed.id();
         if seen.contains(&key) {
             return Err(SettingsError::Invalid(format!(
                 "Shortcut {} is used more than once",
@@ -259,6 +277,21 @@ mod tests {
         assert_eq!(settings.hotkeys.len(), 2);
         assert_eq!(settings.hotkeys[1].shortcut, "Ctrl+Shift+F9");
         assert_eq!(settings.hotkeys[1].id, "hotkey-1");
+    }
+
+    #[test]
+    fn accept_settings_prepares_on_load() {
+        let old = r#"{"schema_version":1,"microphone":{"target":"custom","mute_on_start":false},"hotkeys":[{"id":"toggle-default-mic","shortcut":"F9","action":"toggle_mute","enabled":true}],"general":{"start_minimized":true,"close_to_tray":true,"start_with_system":false}}"#;
+        let settings = accept_settings(old).unwrap();
+        assert_eq!(settings.microphone.target, "default");
+        assert!(settings.toast.enabled);
+
+        let duplicate = r#"{"schema_version":1,"microphone":{"target":"default","mute_on_start":false},"hotkeys":[{"id":"a","shortcut":"Ctrl+Shift+F9","action":"toggle_mute","enabled":true},{"id":"b","shortcut":"Shift+Ctrl+F9","action":"force_mute","enabled":true}],"general":{"start_minimized":true,"close_to_tray":true,"start_with_system":false},"toast":{"enabled":true,"position":"bottom","sound":""}}"#;
+        assert!(accept_settings(duplicate).is_err());
+
+        let broken_key = r#"{"schema_version":1,"microphone":{"target":"default","mute_on_start":false},"hotkeys":[{"id":"a","shortcut":"Nope","action":"toggle_mute","enabled":true}],"general":{"start_minimized":true,"close_to_tray":true,"start_with_system":false}}"#;
+        assert!(accept_settings(broken_key).is_err());
+        assert!(accept_settings("{").is_err());
     }
 
     #[test]

@@ -9,21 +9,23 @@ type Snapshot = {
   settings_json: string;
 };
 
-type HotkeyDraft = {
+type HotkeyDoc = {
   id: string;
   shortcut: string;
   action: string;
+  enabled: boolean;
 };
 
-type Draft = {
-  hotkeys: HotkeyDraft[];
-  muteOnStart: boolean;
-  startMinimized: boolean;
-  closeToTray: boolean;
-  startWithSystem: boolean;
-  toastEnabled: boolean;
-  toastPosition: string;
-  sound: string;
+type SettingsDoc = {
+  schema_version: number;
+  microphone: { target: string; mute_on_start: boolean };
+  hotkeys: HotkeyDoc[];
+  general: {
+    start_minimized: boolean;
+    close_to_tray: boolean;
+    start_with_system: boolean;
+  };
+  toast: { enabled: boolean; position: string; sound: string };
 };
 
 const ACTIONS = [
@@ -46,15 +48,12 @@ const TOAST_PLACES = [
   ["bottom-right", "Bottom right"],
 ] as const;
 
-const EMPTY_DRAFT: Draft = {
-  hotkeys: [{ id: "toggle-default-mic", shortcut: "F9", action: "toggle_mute" }],
-  muteOnStart: false,
-  startMinimized: true,
-  closeToTray: true,
-  startWithSystem: false,
-  toastEnabled: true,
-  toastPosition: "bottom",
-  sound: "",
+const EMPTY_DOC: SettingsDoc = {
+  schema_version: 1,
+  microphone: { target: "default", mute_on_start: false },
+  hotkeys: [{ id: "toggle-default-mic", shortcut: "F9", action: "toggle_mute", enabled: true }],
+  general: { start_minimized: true, close_to_tray: true, start_with_system: false },
+  toast: { enabled: true, position: "bottom", sound: "" },
 };
 
 const KEY_NAMES: Record<string, string> = {
@@ -85,9 +84,10 @@ const KEY_NAMES: Record<string, string> = {
   Backquote: "Backquote",
 };
 
-function readDraft(settingsJson: string): Draft {
+function readSettings(settingsJson: string): SettingsDoc {
   const value = JSON.parse(settingsJson) as {
-    microphone?: { mute_on_start?: boolean };
+    schema_version?: number;
+    microphone?: { target?: string; mute_on_start?: boolean };
     hotkeys?: { id?: string; shortcut?: string; action?: string; enabled?: boolean }[];
     general?: {
       start_minimized?: boolean;
@@ -96,22 +96,28 @@ function readDraft(settingsJson: string): Draft {
     };
     toast?: { enabled?: boolean; position?: string; sound?: string };
   };
-  const hotkeys = (value.hotkeys ?? [])
-    .filter((item) => item.enabled !== false)
-    .map((item, index) => ({
+  return {
+    schema_version: value.schema_version ?? 1,
+    microphone: {
+      target: value.microphone?.target || "default",
+      mute_on_start: value.microphone?.mute_on_start === true,
+    },
+    hotkeys: (value.hotkeys ?? []).map((item, index) => ({
       id: item.id || `hotkey-${index}`,
       shortcut: item.shortcut ?? "",
       action: item.action || "toggle_mute",
-    }));
-  return {
-    hotkeys,
-    muteOnStart: value.microphone?.mute_on_start === true,
-    startMinimized: value.general?.start_minimized === true,
-    closeToTray: value.general?.close_to_tray !== false,
-    startWithSystem: value.general?.start_with_system === true,
-    toastEnabled: value.toast?.enabled !== false,
-    toastPosition: value.toast?.position || "bottom",
-    sound: value.toast?.sound ?? "",
+      enabled: item.enabled !== false,
+    })),
+    general: {
+      start_minimized: value.general?.start_minimized === true,
+      close_to_tray: value.general?.close_to_tray !== false,
+      start_with_system: value.general?.start_with_system === true,
+    },
+    toast: {
+      enabled: value.toast?.enabled !== false,
+      position: value.toast?.position || "bottom",
+      sound: value.toast?.sound ?? "",
+    },
   };
 }
 
@@ -143,7 +149,7 @@ function App() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
-  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const [doc, setDoc] = useState<SettingsDoc>(EMPTY_DOC);
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [nav, setNav] = useState<"mic" | "keys" | "settings">("mic");
   const [keysOpen, setKeysOpen] = useState(true);
@@ -163,7 +169,7 @@ function App() {
         setError(shot.error);
         setSaved(shot.error === "");
         try {
-          setDraft(readDraft(shot.settings_json));
+          setDoc(readSettings(shot.settings_json));
         } catch (parseError) {
           setError(String(parseError));
           setSaved(false);
@@ -205,49 +211,29 @@ function App() {
       }
       const shortcut = shortcutFromEvent(event);
       if (!shortcut) return;
-      const hotkeys = draft.hotkeys.map((hotkey) =>
+      const hotkeys = doc.hotkeys.map((hotkey) =>
         hotkey.id === recordingId ? { ...hotkey, shortcut } : hotkey,
       );
       setRecordingId(null);
-      void persist({ ...draft, hotkeys });
+      void persist({ ...doc, hotkeys });
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [recordingId, draft]);
+  }, [recordingId, doc]);
 
-  async function persist(next: Draft) {
+  async function persist(next: SettingsDoc) {
     const seq = ++saveSeq.current;
-    setDraft(next);
-    const payload = {
-      schema_version: 1,
-      microphone: { target: "default", mute_on_start: next.muteOnStart },
-      hotkeys: next.hotkeys.map((hotkey, index) => ({
-        id: hotkey.id || `hotkey-${index}`,
-        shortcut: hotkey.shortcut.trim(),
-        action: hotkey.action,
-        enabled: true,
-      })),
-      general: {
-        start_minimized: next.startMinimized,
-        close_to_tray: next.closeToTray,
-        start_with_system: next.startWithSystem,
-      },
-      toast: {
-        enabled: next.toastEnabled,
-        position: next.toastPosition,
-        sound: next.sound.trim(),
-      },
-    };
+    setDoc(next);
     try {
       const shot = await invoke<Snapshot>("save_settings", {
-        settingsJson: JSON.stringify(payload),
+        settingsJson: JSON.stringify(next),
       });
       if (seq !== saveSeq.current) return;
       setStatus(shot.status);
       setError(shot.error);
       setSaved(shot.error === "");
       try {
-        setDraft(readDraft(shot.settings_json));
+        setDoc(readSettings(shot.settings_json));
       } catch (parseError) {
         setError(String(parseError));
         setSaved(false);
@@ -268,7 +254,7 @@ function App() {
   }
 
   const copy = statusCopy(status);
-  const holds = draft.hotkeys.some((hotkey) => hotkey.action === "hold_to_mute");
+  const holds = doc.hotkeys.some((hotkey) => hotkey.enabled && hotkey.action === "hold_to_mute");
 
   return (
     <div className="app">
@@ -339,7 +325,7 @@ function App() {
           </button>
           {keysOpen ? (
             <div className="card-body">
-              {draft.hotkeys.map((hotkey) => (
+              {doc.hotkeys.filter((hotkey) => hotkey.enabled).map((hotkey) => (
                 <div className="shortcut" key={hotkey.id}>
                   <button
                     type="button"
@@ -352,10 +338,10 @@ function App() {
                     aria-label="Action"
                     value={hotkey.action}
                     onChange={(event) => {
-                      const hotkeys = draft.hotkeys.map((item) =>
+                      const hotkeys = doc.hotkeys.map((item) =>
                         item.id === hotkey.id ? { ...item, action: event.currentTarget.value } : item,
                       );
-                      void persist({ ...draft, hotkeys });
+                      void persist({ ...doc, hotkeys });
                     }}
                   >
                     {ACTIONS.map(([value, label]) => (
@@ -378,8 +364,8 @@ function App() {
                     aria-label="Remove shortcut"
                     onClick={() =>
                       void persist({
-                        ...draft,
-                        hotkeys: draft.hotkeys.filter((item) => item.id !== hotkey.id),
+                        ...doc,
+                        hotkeys: doc.hotkeys.filter((item) => item.id !== hotkey.id),
                       })
                     }
                   >
@@ -392,9 +378,9 @@ function App() {
                 className="add"
                 onClick={() => {
                   const id = crypto.randomUUID();
-                  setDraft({
-                    ...draft,
-                    hotkeys: [...draft.hotkeys, { id, shortcut: "", action: "toggle_mute" }],
+                  setDoc({
+                    ...doc,
+                    hotkeys: [...doc.hotkeys, { id, shortcut: "", action: "toggle_mute", enabled: true }],
                   });
                   setRecordingId(id);
                   setKeysOpen(true);
@@ -427,30 +413,40 @@ function App() {
             <div className="card-body settings">
               <Toggle
                 label="Mute when MICRIX starts"
-                checked={draft.muteOnStart}
+                checked={doc.microphone.mute_on_start}
                 title="Applies the next time MICRIX starts."
-                onChange={(muteOnStart) => void persist({ ...draft, muteOnStart })}
+                onChange={(muteOnStart) =>
+                  void persist({ ...doc, microphone: { ...doc.microphone, mute_on_start: muteOnStart } })
+                }
               />
               <Toggle
                 label="Start in system tray"
-                checked={draft.startMinimized}
-                onChange={(startMinimized) => void persist({ ...draft, startMinimized })}
+                checked={doc.general.start_minimized}
+                onChange={(startMinimized) =>
+                  void persist({ ...doc, general: { ...doc.general, start_minimized: startMinimized } })
+                }
               />
               <Toggle
                 label="Hide on close"
-                checked={draft.closeToTray}
-                onChange={(closeToTray) => void persist({ ...draft, closeToTray })}
+                checked={doc.general.close_to_tray}
+                onChange={(closeToTray) =>
+                  void persist({ ...doc, general: { ...doc.general, close_to_tray: closeToTray } })
+                }
               />
               <Toggle
                 label="Launch on Windows startup"
-                checked={draft.startWithSystem}
-                onChange={(startWithSystem) => void persist({ ...draft, startWithSystem })}
+                checked={doc.general.start_with_system}
+                onChange={(startWithSystem) =>
+                  void persist({ ...doc, general: { ...doc.general, start_with_system: startWithSystem } })
+                }
               />
               <Toggle
                 label="Show mute toast"
-                checked={draft.toastEnabled}
+                checked={doc.toast.enabled}
                 title="Shows a message when the microphone is muted or unmuted."
-                onChange={(toastEnabled) => void persist({ ...draft, toastEnabled })}
+                onChange={(toastEnabled) =>
+                  void persist({ ...doc, toast: { ...doc.toast, enabled: toastEnabled } })
+                }
               />
               <p className="hint">Where it shows</p>
               <div className="layout-pad" role="group" aria-label="Toast position">
@@ -458,22 +454,22 @@ function App() {
                   <button
                     key={place}
                     type="button"
-                    className={draft.toastPosition === place ? "active" : undefined}
+                    className={doc.toast.position === place ? "active" : undefined}
                     aria-label={label}
-                    aria-pressed={draft.toastPosition === place}
-                    onClick={() => void persist({ ...draft, toastPosition: place })}
+                    aria-pressed={doc.toast.position === place}
+                    onClick={() => void persist({ ...doc, toast: { ...doc.toast, position: place } })}
                   />
                 ))}
               </div>
               <div className="sound-row">
-                <span>{draft.sound ? draft.sound.split(/[/\\]/).pop() : "No sound"}</span>
+                <span>{doc.toast.sound ? doc.toast.sound.split(/[/\\]/).pop() : "No sound"}</span>
                 <button
                   type="button"
                   className="add"
                   onClick={() => {
                     invoke<string>("pick_sound")
                       .then((picked) => {
-                        if (picked) void persist({ ...draft, sound: picked });
+                        if (picked) void persist({ ...doc, toast: { ...doc.toast, sound: picked } });
                       })
                       .catch((pickError: unknown) => {
                         setError(String(pickError));
@@ -483,8 +479,12 @@ function App() {
                 >
                   Add sound
                 </button>
-                {draft.sound ? (
-                  <button type="button" className="add" onClick={() => void persist({ ...draft, sound: "" })}>
+                {doc.toast.sound ? (
+                  <button
+                    type="button"
+                    className="add"
+                    onClick={() => void persist({ ...doc, toast: { ...doc.toast, sound: "" } })}
+                  >
                     Remove
                   </button>
                 ) : null}

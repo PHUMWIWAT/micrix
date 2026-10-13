@@ -5,8 +5,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use mic_core::{DEFAULT_DEVICE_ID, MicError, MuteStatus, mute_status, toggle_mute};
-use mic_settings::{Settings, parse_settings, prepare_settings};
+use mic_core::{DEFAULT_DEVICE_ID, MuteSession, StatusLabel, mute_status, toggle_mute};
+use mic_settings::{Settings, WorkArea, accept_settings, toast_rect, work_area_at};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent, Wry};
@@ -16,8 +16,10 @@ use tauri_plugin_store::StoreExt;
 
 // Close hides the window. Exit sets this first so that close does not keep the process alive.
 static EXITING: AtomicBool = AtomicBool::new(false);
-static LAST_STATUS: Mutex<Option<String>> = Mutex::new(None);
 static TOAST_TICK: AtomicU64 = AtomicU64::new(0);
+
+const MAIN_WIDTH: f64 = 1120.0;
+const MAIN_HEIGHT: f64 = 760.0;
 
 struct TrayStatus {
     icon: TrayIcon<Wry>,
@@ -29,11 +31,6 @@ const STORE_PATH: &str = "settings.json";
 
 struct HotkeyNotice {
     error: Mutex<String>,
-}
-
-struct HeldMute {
-    shortcut: String,
-    restore_to_unmuted: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -76,14 +73,6 @@ fn append_notice(app: &tauri::AppHandle, message: String) {
     store_notice(app, message);
 }
 
-fn status_label(status: Result<MuteStatus, MicError>) -> &'static str {
-    match status {
-        Ok(MuteStatus::Muted) => "Muted",
-        Ok(MuteStatus::Unmuted) => "Unmuted",
-        Ok(MuteStatus::Unavailable) | Err(_) => "Unavailable",
-    }
-}
-
 fn current_settings(app: &tauri::AppHandle) -> Settings {
     app.state::<Mutex<Settings>>()
         .lock()
@@ -91,31 +80,31 @@ fn current_settings(app: &tauri::AppHandle) -> Settings {
         .clone()
 }
 
-fn sync_status(app: &tauri::AppHandle) -> String {
-    let controller = mic_platform::open_controller();
-    let label = status_label(mute_status(controller.as_ref(), DEFAULT_DEVICE_ID)).to_string();
-    if let Some(tray) = app.try_state::<TrayStatus>() {
-        let _ = tray.label.set_text(&label);
-        let _ = tray.icon.set_tooltip(Some(format!("MICRIX — {label}")));
-    }
-    let _ = app.emit("mic-status", &label);
-    let mut previous = LAST_STATUS
+fn with_session<T>(app: &tauri::AppHandle, update: impl FnOnce(&mut MuteSession) -> T) -> T {
+    let state = app.state::<Mutex<MuteSession>>();
+    let mut session = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let changed = previous.as_deref() != Some(label.as_str());
-    let first = previous.is_none();
-    *previous = Some(label.clone());
-    drop(previous);
-    if changed && !first {
-        present_toast(app, &label);
-    }
-    label
+    update(&mut session)
 }
 
-fn present_toast(app: &tauri::AppHandle, label: &str) {
-    if label != "Muted" && label != "Unmuted" {
-        return;
+fn sync_status(app: &tauri::AppHandle) -> String {
+    let controller = mic_platform::open_controller();
+    let label = StatusLabel::from_mute(mute_status(controller.as_ref(), DEFAULT_DEVICE_ID));
+    let text = label.as_str();
+    if let Some(tray) = app.try_state::<TrayStatus>() {
+        let _ = tray.label.set_text(text);
+        let _ = tray.icon.set_tooltip(Some(format!("MICRIX — {text}")));
     }
+    let _ = app.emit("mic-status", text);
+    let toast = with_session(app, |session| session.observe(label));
+    if let Some(toast) = toast {
+        present_toast(app, toast);
+    }
+    text.to_string()
+}
+
+fn present_toast(app: &tauri::AppHandle, text: &str) {
     let settings = current_settings(app);
     play_toast_sound(&settings.toast.sound);
     if !settings.toast.enabled {
@@ -125,11 +114,6 @@ fn present_toast(app: &tauri::AppHandle, label: &str) {
         return;
     };
     place_toast(app, &toast, &settings.toast.position);
-    let text = if label == "Muted" {
-        "Microphone muted"
-    } else {
-        "Microphone unmuted"
-    };
     let script = format!(
         "window.__micrixToast && window.__micrixToast({})",
         serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string())
@@ -154,57 +138,53 @@ fn place_toast(app: &tauri::AppHandle, toast: &tauri::WebviewWindow, position: &
         return;
     };
     let area = monitor.work_area();
-    let scale = monitor.scale_factor();
-    let width = (280.0 * scale).round() as i32;
-    let height = (84.0 * scale).round() as i32;
-    let margin = (24.0 * scale).round() as i32;
-    let left = area.position.x;
-    let top = area.position.y;
-    let right = left + area.size.width as i32 - width;
-    let bottom = top + area.size.height as i32 - height;
-    let center_x = left + (area.size.width as i32 - width) / 2;
-    let center_y = top + (area.size.height as i32 - height) / 2;
-    let (x, y) = match position {
-        "top-left" => (left + margin, top + margin),
-        "top" => (center_x, top + margin),
-        "top-right" => (right - margin, top + margin),
-        "left" => (left + margin, center_y),
-        "center" => (center_x, center_y),
-        "right" => (right - margin, center_y),
-        "bottom-left" => (left + margin, bottom - margin),
-        "bottom-right" => (right - margin, bottom - margin),
-        _ => (center_x, bottom - margin),
-    };
+    let rect = toast_rect(
+        WorkArea {
+            x: area.position.x,
+            y: area.position.y,
+            width: area.size.width,
+            height: area.size.height,
+        },
+        monitor.scale_factor(),
+        position,
+    );
     let _ = toast.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
-        width as u32,
-        height as u32,
+        rect.width,
+        rect.height,
     )));
     let _ = toast.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
-        x, y,
+        rect.x, rect.y,
     )));
 }
 
 fn toast_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
-    let cursor = app.cursor_position().ok();
+    let cursor = app
+        .cursor_position()
+        .ok()
+        .map(|cursor| (cursor.x as i32, cursor.y as i32));
     let monitors = app.available_monitors().unwrap_or_default();
-    if let Some(cursor) = cursor {
-        let x = cursor.x as i32;
-        let y = cursor.y as i32;
-        for monitor in &monitors {
+    let areas: Vec<WorkArea> = monitors
+        .iter()
+        .map(|monitor| {
             let area = monitor.work_area();
-            let inside = x >= area.position.x
-                && y >= area.position.y
-                && x < area.position.x + area.size.width as i32
-                && y < area.position.y + area.size.height as i32;
-            if inside {
-                return Some(monitor.clone());
+            WorkArea {
+                x: area.position.x,
+                y: area.position.y,
+                width: area.size.width,
+                height: area.size.height,
             }
-        }
+        })
+        .collect();
+    if let Some(picked) = work_area_at(cursor, &areas) {
+        return monitors.into_iter().find(|monitor| {
+            let area = monitor.work_area();
+            area.position.x == picked.x
+                && area.position.y == picked.y
+                && area.size.width == picked.width
+                && area.size.height == picked.height
+        });
     }
-    monitors
-        .into_iter()
-        .next()
-        .or_else(|| app.primary_monitor().ok().flatten())
+    app.primary_monitor().ok().flatten()
 }
 
 fn play_toast_sound(path: &str) {
@@ -257,7 +237,7 @@ fn load_or_create_settings(app: &tauri::App) -> Result<Settings, String> {
         }
         Some(value) => {
             let text = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-            parse_settings(&text).map_err(|error| error.to_string())
+            accept_settings(&text).map_err(|error| error.to_string())
         }
     }
 }
@@ -275,13 +255,10 @@ fn same_shortcut(saved: &str, event: &Shortcut) -> bool {
 }
 
 fn release_hold(app: &tauri::AppHandle) {
-    let Some(held) = app
-        .try_state::<Mutex<Option<HeldMute>>>()
-        .and_then(|slot| slot.lock().ok().and_then(|mut slot| slot.take()))
-    else {
+    let Some(restore) = with_session(app, |session| session.release()) else {
         return;
     };
-    if !held.restore_to_unmuted {
+    if !restore {
         return;
     }
     let controller = mic_platform::open_controller();
@@ -292,55 +269,59 @@ fn release_hold(app: &tauri::AppHandle) {
 }
 
 fn begin_hold(app: &tauri::AppHandle, shortcut: &Shortcut) {
-    let Some(slot) = app.try_state::<Mutex<Option<HeldMute>>>() else {
-        return;
-    };
-    let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if slot.is_some() {
-        return;
+    enum HoldStart {
+        Busy,
+        Failed(String),
+        MuteFailed(String),
+        Done,
     }
-    let controller = mic_platform::open_controller();
-    let muted = match controller.get_muted(DEFAULT_DEVICE_ID) {
-        Ok(muted) => muted,
-        Err(error) => {
-            drop(slot);
-            store_notice(app, format!("Could not mute while held: {error}"));
-            return;
+    let started = with_session(app, |slot| {
+        if !slot.can_begin_hold() {
+            return HoldStart::Busy;
         }
-    };
-    if !muted && let Err(error) = controller.set_muted(DEFAULT_DEVICE_ID, true) {
-        drop(slot);
-        store_notice(app, format!("Could not mute while held: {error}"));
-        sync_status(app);
-        return;
-    }
-    let saved = current_settings(app)
-        .hotkeys
-        .into_iter()
-        .find_map(|hotkey| {
-            (hotkey.enabled && same_shortcut(&hotkey.shortcut, shortcut)).then_some(hotkey.shortcut)
-        })
-        .unwrap_or_default();
-    *slot = Some(HeldMute {
-        shortcut: saved,
-        restore_to_unmuted: !muted,
+        let controller = mic_platform::open_controller();
+        let muted = match controller.get_muted(DEFAULT_DEVICE_ID) {
+            Ok(muted) => muted,
+            Err(error) => {
+                return HoldStart::Failed(format!("Could not mute while held: {error}"));
+            }
+        };
+        if !muted && let Err(error) = controller.set_muted(DEFAULT_DEVICE_ID, true) {
+            return HoldStart::MuteFailed(format!("Could not mute while held: {error}"));
+        }
+        let saved = current_settings(app)
+            .hotkeys
+            .into_iter()
+            .find_map(|hotkey| {
+                (hotkey.enabled && same_shortcut(&hotkey.shortcut, shortcut))
+                    .then_some(hotkey.shortcut)
+            })
+            .unwrap_or_default();
+        slot.commit_hold(saved, muted);
+        HoldStart::Done
     });
-    drop(slot);
-    sync_status(app);
+    match started {
+        HoldStart::Busy => {}
+        HoldStart::Failed(message) => store_notice(app, message),
+        HoldStart::MuteFailed(message) => {
+            store_notice(app, message);
+            sync_status(app);
+        }
+        HoldStart::Done => {
+            sync_status(app);
+        }
+    }
 }
 
 fn end_hold(app: &tauri::AppHandle, shortcut: &Shortcut) {
-    let Some(slot) = app.try_state::<Mutex<Option<HeldMute>>>() else {
-        return;
-    };
-    let slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(held) = slot.as_ref() else {
-        return;
-    };
-    if !same_shortcut(&held.shortcut, shortcut) {
+    let matches = with_session(app, |session| {
+        session
+            .hold()
+            .is_some_and(|held| same_shortcut(&held.shortcut, shortcut))
+    });
+    if !matches {
         return;
     }
-    drop(slot);
     release_hold(app);
 }
 
@@ -591,8 +572,7 @@ fn snapshot(app: tauri::AppHandle) -> Snapshot {
 
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, settings_json: String) -> Result<Snapshot, String> {
-    let settings = parse_settings(&settings_json).map_err(|error| error.to_string())?;
-    let settings = prepare_settings(settings).map_err(|error| error.to_string())?;
+    let settings = accept_settings(&settings_json).map_err(|error| error.to_string())?;
     write_settings(&app, &settings)?;
     *app.state::<Mutex<Settings>>()
         .lock()
@@ -625,7 +605,7 @@ fn pick_sound(app: tauri::AppHandle) -> Result<String, String> {
 fn window_owner(window: &tauri::WebviewWindow) -> Option<isize> {
     #[cfg(windows)]
     {
-        return window.hwnd().ok().map(|handle| handle.0 as isize);
+        window.hwnd().ok().map(|handle| handle.0 as isize)
     }
     #[cfg(not(windows))]
     {
@@ -665,7 +645,7 @@ fn choose_wav(owner: Option<isize>) -> Result<String, String> {
             .iter()
             .position(|unit| *unit == 0)
             .unwrap_or(buffer.len());
-        return Ok(String::from_utf16_lossy(&buffer[..end]));
+        Ok(String::from_utf16_lossy(&buffer[..end]))
     }
     #[cfg(not(windows))]
     {
@@ -740,7 +720,7 @@ pub fn run() {
             app.manage(HotkeyNotice {
                 error: Mutex::new(String::new()),
             });
-            app.manage(Mutex::new(None::<HeldMute>));
+            app.manage(Mutex::new(MuteSession::new()));
             let settings = match load_or_create_settings(app) {
                 Ok(settings) => settings,
                 Err(error) => {
@@ -796,13 +776,15 @@ pub fn run() {
                     };
                     let width = f64::from(size.width) / scale;
                     let height = f64::from(size.height) / scale;
-                    if (width - 1120.0).abs() < 2.0 && (height - 760.0).abs() < 2.0 {
+                    if corrected_main_size(width, height).is_none() {
                         return;
                     }
                     let _ = window.unmaximize();
                     let _ = window.set_fullscreen(false);
-                    let _ = window
-                        .set_size(tauri::Size::Logical(tauri::LogicalSize::new(1120.0, 760.0)));
+                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+                        MAIN_WIDTH,
+                        MAIN_HEIGHT,
+                    )));
                 }
                 _ => {}
             }
@@ -817,9 +799,31 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+/// `None` keeps the reported logical size. A hit asks the shell to snap back.
+fn corrected_main_size(width: f64, height: f64) -> Option<(f64, f64)> {
+    if width == 0.0 || height == 0.0 {
+        return None;
+    }
+    if (width - MAIN_WIDTH).abs() < 2.0 && (height - MAIN_HEIGHT).abs() < 2.0 {
+        return None;
+    }
+    Some((MAIN_WIDTH, MAIN_HEIGHT))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_window_stays_at_the_fixed_size() {
+        assert_eq!(corrected_main_size(0.0, 760.0), None);
+        assert_eq!(corrected_main_size(1120.0, 760.0), None);
+        assert_eq!(corrected_main_size(1121.5, 760.0), None);
+        assert_eq!(
+            corrected_main_size(800.0, 600.0),
+            Some((MAIN_WIDTH, MAIN_HEIGHT))
+        );
+    }
 
     #[test]
     fn default_shortcut_parses() {
@@ -827,17 +831,5 @@ mod tests {
         let text = settings.toggle_shortcut().expect("default toggle shortcut");
         text.parse::<tauri_plugin_global_shortcut::Shortcut>()
             .expect("default shortcut must parse");
-    }
-
-    #[test]
-    fn tray_status_never_calls_a_failure_unmuted() {
-        assert_eq!(status_label(Ok(MuteStatus::Muted)), "Muted");
-        assert_eq!(status_label(Ok(MuteStatus::Unmuted)), "Unmuted");
-        assert_eq!(status_label(Ok(MuteStatus::Unavailable)), "Unavailable");
-        assert_eq!(status_label(Err(MicError::DeviceNotFound)), "Unavailable");
-        assert_eq!(
-            status_label(Err(MicError::Platform("failed".to_string()))),
-            "Unavailable"
-        );
     }
 }
